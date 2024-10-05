@@ -38,9 +38,9 @@ class SOLOHead(nn.Module):
         postprocess_cfg=MappingProxyType({
             "cate_thresh": 0.2,
             "ins_thresh": 0.5,
-            "pre_NMS_num": 50,
+            "pre_NMS_num": 50,          # ??????
             "keep_instance": 5,
-            "IoU_thresh": 0.5
+            "IoU_thresh": 0.5           # ??????
         })
     ):
         super(SOLOHead, self).__init__()
@@ -135,7 +135,7 @@ class SOLOHead(nn.Module):
         cate_pred_list, ins_pred_list = self.MultiApply(
             self.forward_single_level,
             new_fpn_list,
-            list(range(len(new_fpn_list))),
+            [*range(len(new_fpn_list)),],
             eval=eval,
             upsample_shape=upsample_shape
         )
@@ -408,24 +408,60 @@ class SOLOHead(nn.Module):
         Compute the Focal Loss.
         """
         cate_preds = torch.cat([cate_preds, 1 - torch.sum(cate_preds, dim=1, keepdim=True)], dim=1)
-        p = torch.clamp_min(
-            torch.where(F.one_hot(cate_gts, num_classes=self.num_classes).to(torch.bool), cate_preds, 1 - cate_preds),
-            min=self.epsilon
-        )
-        return -torch.mean(torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
+        mask = F.one_hot(cate_gts, num_classes=self.num_classes).to(torch.bool)
+        a = torch.where(mask, self.cate_loss_cfg["alpha"], 1 - self.cate_loss_cfg["alpha"])
+        p = torch.clamp_min(torch.where(mask, cate_preds, 1 - cate_preds), min=1e-6)
+        return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
 
-    def PostProcess(self, ins_pred_list, cate_pred_list, ori_size):
+    def PostProcess(
+        self,
+        ins_pred_list: List[torch.Tensor],  # fpn x (bsz, S^2, ori_H / 4, ori_W / 4)
+        cate_pred_list: List[torch.Tensor], # fpn x (bsz, S, S, C - 1)
+        ori_size: Tuple[int, int]           # (ori_H, ori_W)
+    ):
         """
         Post-process the predictions.
         """
-        pass
+        return (*map(lambda l: torch.stack(l, dim=0), zip(*[
+            self.PostProcessImg(ins_pred_img, cate_pred_img, ori_size)
+            for ins_pred_img, cate_pred_img in zip(
+                torch.cat(ins_pred_list, dim=1),
+                torch.cat([t.flatten(1, 2) for t in cate_pred_list], dim=1),
+            )
+        ])),)
 
-
-    def PostProcessImg(self, ins_pred_img, cate_pred_img, ori_size):
+    def PostProcessImg(
+        self,
+        ins_pred_img: torch.Tensor,         # (sum_S^2, ori_H / 4, ori_W / 4)
+        cate_pred_img: torch.Tensor,        # (sum_S^2, C - 1)
+        ori_size: Tuple[int, int]
+    ) -> Tuple[
+        torch.Tensor,                       # (keep_instance,)
+        torch.Tensor,                       # (keep_instance,)
+        torch.Tensor,                       # (keep_instance, ori_H, ori_W)
+    ]:
         """
         Post-process predictions for a single image.
         """
-        pass
+        print(ins_pred_img.shape, cate_pred_img.shape)
+        scores, labels = torch.max(cate_pred_img, dim=-1)
+
+        indices, = torch.where(scores > self.postprocess_cfg["cate_thresh"])
+        scores, idx = torch.sort(scores[indices], descending=True)
+        indices = indices[idx]
+
+        ins_pred_img, labels = ins_pred_img[indices], labels[indices]
+        ins_pred_img = torchvision.transforms.Resize(ori_size)(ins_pred_img)
+        print(ins_pred_img.shape, scores.shape, labels.shape)
+
+        decayed_scores = self.MatrixNMS(ins_pred_img, scores)
+        decayed_scores, idx = torch.topk(decayed_scores, self.postprocess_cfg["keep_instance"])
+        indices = indices[idx]
+
+        ins_pred_img, scores, labels = ins_pred_img[idx], scores[idx], labels[idx]
+        ins_pred_img = (ins_pred_img > self.postprocess_cfg["ins_thresh"]).to(torch.float)
+        print(scores, labels, ins_pred_img.shape, torch.sum(ins_pred_img, dim=[-2, -1]))
+        return scores, labels, ins_pred_img
 
     def MatrixNMS(self, sorted_masks, sorted_scores, method="gauss", gauss_sigma=0.5):
         """
@@ -439,7 +475,7 @@ class SOLOHead(nn.Module):
         ious = (intersection / union).triu(diagonal=1)
 
         ious_cmax = ious.max(0)[0].expand(n, n).T
-        if method == 'gauss':
+        if method == "gauss":
             decay = torch.exp(-(ious ** 2 - ious_cmax ** 2) / gauss_sigma)
         else:
             decay = (1 - ious) / (1 - ious_cmax)

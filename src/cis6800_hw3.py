@@ -51,6 +51,10 @@ if __name__ == "__main__":
             ins_gts_list, ins_ind_gts_list, cate_gts_list = solo_head.target(ins_pred_list, bbox_list, label_list, mask_list)
 
             print(solo_head.loss(cate_pred_list, ins_pred_list, ins_gts_list, ins_ind_gts_list, cate_gts_list))
+            # raise Exception()
+            # print([ins_pred.shape for ins_pred in ins_pred_list])
+            # print([cate_pred.shape for cate_pred in cate_pred_list])
+            print([t.shape for t in solo_head.PostProcess(ins_pred_list, cate_pred_list, (800, 1088))])
             raise Exception()
 
             check += 1
