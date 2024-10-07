@@ -46,7 +46,6 @@ class SOLOHead(nn.Module):
         super(SOLOHead, self).__init__()
         self.num_classes = num_classes
         self.seg_num_grids = num_grids
-        self.cate_out_channels = self.num_classes - 1
         self.in_channels = in_channels
         self.seg_feat_channels = seg_feat_channels
         self.stacked_convs = stacked_convs
@@ -88,8 +87,8 @@ class SOLOHead(nn.Module):
             )
 
         self.cate_out = nn.Sequential(
-            nn.Conv2d(self.seg_feat_channels, self.num_classes - 1, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.Sigmoid()
+            nn.Conv2d(self.seg_feat_channels, self.num_classes, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.Softmax(dim=-3),
         )
 
         # Instance branch head
@@ -106,7 +105,7 @@ class SOLOHead(nn.Module):
             self.ins_out_list.append(
                 nn.Sequential(
                     nn.Conv2d(self.seg_feat_channels, num_grid ** 2, kernel_size=1, stride=1, padding=0, bias=True),
-                    nn.Sigmoid()
+                    nn.Sigmoid(),
                 )
             )
 
@@ -175,7 +174,7 @@ class SOLOHead(nn.Module):
         cate_feat = F.interpolate(fpn_feat, size=(num_grid, num_grid), mode="bilinear", align_corners=False)
         for conv in self.cate_head:
             cate_feat = conv(cate_feat)
-        cate_pred = self.cate_out(cate_feat)  # (batch_size, C-1, S, S)
+        cate_pred = self.cate_out(cate_feat)  # (batch_size, C, S, S)
 
         # Instance branch
         # Generate coordinate feature
@@ -193,11 +192,11 @@ class SOLOHead(nn.Module):
             # Upsample ins_pred to upsample_shape
             ins_pred = F.interpolate(ins_pred, size=upsample_shape, mode="bilinear", align_corners=False)
             # Apply points NMS to cate_pred
-            cate_pred = self.points_nms(cate_pred).permute(0, 2, 3, 1)  # (batch_size, S, S, C-1)
+            cate_pred = self.points_nms(cate_pred).permute(0, 2, 3, 1)  # (batch_size, S, S, C)
 
         # Check flag
         if eval == False:
-            assert cate_pred.shape[1:] == (3, num_grid, num_grid)
+            assert cate_pred.shape[1:] == (self.num_classes, num_grid, num_grid)
             assert ins_pred.shape[1:] == (num_grid ** 2, fpn_feat.shape[2] * 2, fpn_feat.shape[3] * 2)
         else:
             pass
@@ -381,7 +380,7 @@ class SOLOHead(nn.Module):
             for cate_gts_level in zip(*cate_gts_list)
         ], dim=0).to(torch.long)
         cate_preds = torch.cat([
-            cate_pred_level.permute(0, 2, 3, 1).reshape(-1, self.cate_out_channels)
+            cate_pred_level.permute(0, 2, 3, 1).reshape(-1, self.num_classes)
             for cate_pred_level in cate_pred_list
         ], dim=0)
 
@@ -407,10 +406,9 @@ class SOLOHead(nn.Module):
         """
         Compute the Focal Loss.
         """
-        cate_preds = torch.cat([1 - torch.sum(cate_preds, dim=1, keepdim=True), cate_preds], dim=1)
         mask = F.one_hot(cate_gts, num_classes=self.num_classes).to(torch.bool)
         a = torch.where(mask, self.cate_loss_cfg["alpha"], 1 - self.cate_loss_cfg["alpha"])
-        p = torch.clamp_min(torch.where(mask, cate_preds, 1 - cate_preds), min=1e-6)
+        p = torch.where(mask, cate_preds, 1 - cate_preds)
         return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
 
     def PostProcess(

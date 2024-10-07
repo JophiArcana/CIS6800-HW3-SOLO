@@ -47,7 +47,7 @@ if __name__ == "__main__":
         img, label_list, mask_list, bbox_list = [data[i] for i in range(len(data))]
         for label in label_list:
             fpn_feat_list = [v.detach() for v in solo_backbone(img).values()]
-            cate_pred_list, ins_pred_list = solo_head.forward(fpn_feat_list, eval=True)
+            cate_pred_list, ins_pred_list = solo_head.forward(fpn_feat_list)
             ins_gts_list, ins_ind_gts_list, cate_gts_list = solo_head.target(ins_pred_list, bbox_list, label_list, mask_list)
 
             print(solo_head.loss(cate_pred_list, ins_pred_list, ins_gts_list, ins_ind_gts_list, cate_gts_list))
