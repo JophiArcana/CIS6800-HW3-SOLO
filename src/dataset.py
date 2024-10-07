@@ -9,8 +9,6 @@ import torch
 import torchvision.transforms
 from torch.utils.data import Dataset, DataLoader
 
-from settings import DEVICE
-
 
 class BuildDataset(Dataset):
     def __init__(self, paths: Dict[str, str]):
@@ -68,7 +66,7 @@ class BuildDataset(Dataset):
 
 
 class BuildDataLoader(DataLoader):
-    def __init__(self, dataset: Dataset, batch_size: int, shuffle: bool, num_workers: int):
+    def __init__(self, dataset: Dataset, **kwargs):
         def collate_fn(batch: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]) -> Tuple[
             torch.Tensor, torch.Tensor, Sequence[torch.Tensor], Sequence[torch.Tensor]
         ]:
@@ -77,10 +75,8 @@ class BuildDataLoader(DataLoader):
 
         super().__init__(
             dataset=dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            num_workers=num_workers,
-            collate_fn=collate_fn
+            collate_fn=collate_fn,
+            **{k: v for k, v in kwargs.items() if k != "collate_fn"},
         )
 
 

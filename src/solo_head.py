@@ -119,7 +119,7 @@ class SOLOHead(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, fpn_feat_list, eval=False):
+    def forward(self, fpn_feat_list, evaluate=False):
         """
         Forward function processes every level in the FPN.
         Input:
@@ -135,7 +135,7 @@ class SOLOHead(nn.Module):
             self.forward_single_level,
             new_fpn_list,
             [*range(len(new_fpn_list)),],
-            eval=eval,
+            evaluate=evaluate,
             upsample_shape=upsample_shape
         )
 
@@ -157,7 +157,7 @@ class SOLOHead(nn.Module):
         new_fpn = [fpn_p2, fpn_feat_list[1], fpn_feat_list[2], fpn_feat_list[3], fpn_p5]
         return new_fpn
 
-    def forward_single_level(self, fpn_feat, idx, eval=False, upsample_shape=None):
+    def forward_single_level(self, fpn_feat, idx, evaluate=False, upsample_shape=None):
         """
         This function forwards a single level of FPN feature map through the network.
         Input:
@@ -188,14 +188,14 @@ class SOLOHead(nn.Module):
         # Apply the output layer
         ins_pred = self.ins_out_list[idx](ins_feat)  # (batch_size, S^2, 2H_feat, 2W_feat)
 
-        if eval:
+        if evaluate:
             # Upsample ins_pred to upsample_shape
             ins_pred = F.interpolate(ins_pred, size=upsample_shape, mode="bilinear", align_corners=False)
             # Apply points NMS to cate_pred
             cate_pred = self.points_nms(cate_pred).permute(0, 2, 3, 1)  # (batch_size, S, S, C)
 
         # Check flag
-        if eval == False:
+        if not evaluate:
             assert cate_pred.shape[1:] == (self.num_classes, num_grid, num_grid)
             assert ins_pred.shape[1:] == (num_grid ** 2, fpn_feat.shape[2] * 2, fpn_feat.shape[3] * 2)
         else:
@@ -385,7 +385,10 @@ class SOLOHead(nn.Module):
         ], dim=0)
 
         lc = self.FocalLoss(cate_preds, cate_gts)
-        lm = self.DiceLoss(torch.cat(ins_preds, dim=0), torch.cat(ins_gts, dim=0)).mean()
+        lm = torch.cat([
+            self.DiceLoss(ins_pred, ins_gt)
+            for ins_pred, ins_gt in zip(ins_preds, ins_gts)
+        ], dim=0).mean()
         return lc * self.cate_loss_cfg["weight"] + lm * self.mask_loss_cfg["weight"]
 
     def DiceLoss(

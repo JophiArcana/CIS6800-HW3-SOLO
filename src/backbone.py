@@ -4,18 +4,11 @@ import torchvision
 from settings import DEVICE
 
 
-def Resnet50Backbone(checkpoint_file=None, eval=True):
-    model = torchvision.models.detection.maskrcnn_resnet50_fpn(pretrained=False, pretrained_backbone=True)
-
-    if eval:
-        model.eval()
-
-    model.to(DEVICE)
+def Resnet50Backbone(checkpoint_file=None):
+    model = torchvision.models.detection.maskrcnn_resnet50_fpn(pretrained=False, pretrained_backbone=True).to(DEVICE)
     resnet50_fpn = model.backbone
-
     if checkpoint_file:
         resnet50_fpn.load_state_dict(torch.load(checkpoint_file, map_location=DEVICE)['backbone'])
-
     return resnet50_fpn
 
 
