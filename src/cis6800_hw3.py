@@ -24,7 +24,7 @@ if __name__ == "__main__":
     test_size = full_size - train_size
     # random split the dataset into training and testset
     # set seed
-    torch.random.manual_seed(1)
+    # torch.random.manual_seed(1)
     train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size], generator=torch.Generator(DEVICE))
     # push the randomized training data into the dataloader
 

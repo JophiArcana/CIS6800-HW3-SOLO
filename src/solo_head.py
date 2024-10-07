@@ -407,12 +407,9 @@ class SOLOHead(nn.Module):
         """
         Compute the Focal Loss.
         """
-        cate_preds = torch.cat([cate_preds, 1 - torch.sum(cate_preds, dim=1, keepdim=True)], dim=1)
+        cate_preds = torch.cat([1 - torch.sum(cate_preds, dim=1, keepdim=True), cate_preds], dim=1)
         mask = F.one_hot(cate_gts, num_classes=self.num_classes).to(torch.bool)
         a = torch.where(mask, self.cate_loss_cfg["alpha"], 1 - self.cate_loss_cfg["alpha"])
-        torch.set_printoptions(precision=12, sci_mode=False)
-        print(cate_preds)
-        raise Exception()
         p = torch.clamp_min(torch.where(mask, cate_preds, 1 - cate_preds), min=1e-6)
         return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
 
@@ -446,7 +443,6 @@ class SOLOHead(nn.Module):
         """
         Post-process predictions for a single image.
         """
-        print(ins_pred_img.shape, cate_pred_img.shape)
         scores, labels = torch.max(cate_pred_img, dim=-1)
 
         indices, = torch.where(scores > self.postprocess_cfg["cate_thresh"])
@@ -455,15 +451,12 @@ class SOLOHead(nn.Module):
 
         ins_pred_img, labels = ins_pred_img[indices], labels[indices]
         ins_pred_img = torchvision.transforms.Resize(ori_size)(ins_pred_img)
-        print(ins_pred_img.shape, scores.shape, labels.shape)
 
         decayed_scores = self.MatrixNMS(ins_pred_img, scores)
         decayed_scores, idx = torch.topk(decayed_scores, self.postprocess_cfg["keep_instance"])
-        indices = indices[idx]
 
         ins_pred_img, scores, labels = ins_pred_img[idx], scores[idx], labels[idx]
         ins_pred_img = (ins_pred_img > self.postprocess_cfg["ins_thresh"]).to(torch.float)
-        print(scores, labels, ins_pred_img.shape, torch.sum(ins_pred_img, dim=[-2, -1]))
         return scores, labels, ins_pred_img
 
     def MatrixNMS(self, sorted_masks, sorted_scores, method="gauss", gauss_sigma=0.5):
@@ -489,54 +482,74 @@ class SOLOHead(nn.Module):
         """
         Visualize the ground truth tensor.
         """
-        num_pyramids = len(ins_gts_list[0])
+        for img_idx in range(len(img)):
+            num_pyramids = len(ins_gts_list[img_idx])
 
-        fig, axes = plt.subplots(1, num_pyramids, figsize=(num_pyramids * 5, 5))
-        if num_pyramids == 1:
-            axes = [axes]
+            fig, axes = plt.subplots(1, num_pyramids, figsize=(num_pyramids * 5, 5))
+            if num_pyramids == 1:
+                axes = [axes]
 
-        for i in range(num_pyramids):
-            ax = axes[i]
-            _img = img[0].permute(1, 2, 0)
-            _img = (_img - _img.min()) / (_img.max() - _img.min())
-            _img = torch.clamp(_img, 0, 1).cpu().numpy()
-            ax.imshow(_img)
-            ax.set_title(f"Pyramid level {i + 1}")
+            for i in range(num_pyramids):
+                ax = axes[i]
+                _img = img[img_idx].permute(1, 2, 0)
+                _img = ((_img - _img.min()) / (_img.max() - _img.min())).numpy(force=True)
+                ax.imshow(_img)
+                ax.set_title(f"Pyramid level {i + 1}")
 
-            if ins_ind_gts_list[0][i].sum() == 0:
-                continue
+                if ins_ind_gts_list[img_idx][i].sum() == 0:
+                    continue
 
-            index = ins_ind_gts_list[0][i] > 0
-            label = torch.flatten(cate_gts_list[0][i])[index]
-            mask = ins_gts_list[0][i][index, :, :]
-            mask = mask.unsqueeze(1)
-            reshaped_mask = F.interpolate(mask, (img.shape[2], img.shape[3]), mode="bilinear")
-            combined_mask = np.zeros((img.shape[2], img.shape[3], img.shape[1]))
+                index = ins_ind_gts_list[img_idx][i] > 0
+                label = torch.flatten(cate_gts_list[img_idx][i])[index]
+                mask = ins_gts_list[img_idx][i][index, :, :]
+                mask = mask.unsqueeze(1)
+                reshaped_mask = F.interpolate(mask, img.shape[2:], mode="bilinear")
+                combined_mask = np.zeros((*img.shape[2:], img.shape[1]))
 
-            for idx, l in enumerate(label):
-                l = l.item()
-                if l == 1:
-                    combined_mask[:, :, 0] += reshaped_mask[idx, 0, :, :].cpu().numpy()
-                elif l == 2:
-                    combined_mask[:, :, 1] += reshaped_mask[idx, 0, :, :].cpu().numpy()
-                elif l == 3:
-                    combined_mask[:, :, 2] += reshaped_mask[idx, 0, :, :].cpu().numpy()
+                for idx, l in enumerate(label):
+                    if l > 0:
+                        combined_mask[:, :, l - 1] += reshaped_mask[idx, 0, :, :].numpy(force=True)
+
+                origin_img = _img
+                index_to_mask = combined_mask > 0
+                masked_image = deepcopy(origin_img)
+                masked_image[index_to_mask] = 0
+                mask_to_plot = combined_mask + masked_image
+                ax.imshow(mask_to_plot)
+
+            plt.tight_layout()
+            plt.show()
+
+    def PlotInfer(self, NMS_sorted_scores_list, NMS_sorted_cate_label_list, NMS_sorted_ins_list, color_list, img, iter_ind):
+        """
+        Plot inference segmentation results on the image.
+        """
+        score_threshold = 0.5
+        for img_idx in range(len(img)):
+            _img = img[img_idx].permute(1, 2, 0)
+            _img = ((_img - _img.min()) / (_img.max() - _img.min())).numpy(force=True)
+            plt.imshow(_img)
+            plt.title("Inference")
+
+
+            label = NMS_sorted_cate_label_list[img_idx]
+            scores = NMS_sorted_scores_list[img_idx]
+            mask = NMS_sorted_ins_list[img_idx].unsqueeze(1)
+
+            combined_mask = np.zeros((*img.shape[2:], img.shape[1]))
+            for idx, (l, s) in enumerate(zip(label, scores)):
+                if l > 0 and s > score_threshold:
+                    combined_mask[:, :, l - 1] += mask[idx, 0, :, :].numpy(force=True)
 
             origin_img = _img
             index_to_mask = combined_mask > 0
             masked_image = deepcopy(origin_img)
             masked_image[index_to_mask] = 0
             mask_to_plot = combined_mask + masked_image
-            ax.imshow(mask_to_plot)
+            plt.imshow(mask_to_plot)
 
-        plt.tight_layout()
-        plt.show()
-
-    def PlotInfer(self, NMS_sorted_scores_list, NMS_sorted_cate_label_list, NMS_sorted_ins_list, color_list, img, iter_ind):
-        """
-        Plot inference segmentation results on the image.
-        """
-        pass
+            plt.tight_layout()
+            plt.show()
 
 
 if __name__ == "__main__":
