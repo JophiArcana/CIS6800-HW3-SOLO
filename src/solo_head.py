@@ -410,6 +410,9 @@ class SOLOHead(nn.Module):
         cate_preds = torch.cat([cate_preds, 1 - torch.sum(cate_preds, dim=1, keepdim=True)], dim=1)
         mask = F.one_hot(cate_gts, num_classes=self.num_classes).to(torch.bool)
         a = torch.where(mask, self.cate_loss_cfg["alpha"], 1 - self.cate_loss_cfg["alpha"])
+        torch.set_printoptions(precision=12, sci_mode=False)
+        print(cate_preds)
+        raise Exception()
         p = torch.clamp_min(torch.where(mask, cate_preds, 1 - cate_preds), min=1e-6)
         return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
 
