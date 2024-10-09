@@ -48,6 +48,7 @@ class SOLOHead(nn.Module):
         super(SOLOHead, self).__init__()
         self.num_classes = num_classes
         self.seg_num_grids = num_grids
+        self.cate_out_channels = self.num_classes - 1
         self.in_channels = in_channels
         self.seg_feat_channels = seg_feat_channels
         self.stacked_convs = stacked_convs
@@ -89,9 +90,8 @@ class SOLOHead(nn.Module):
             )
 
         self.cate_out = nn.Sequential(
-            nn.Conv2d(self.seg_feat_channels, self.num_classes, kernel_size=3, stride=1, padding=1, bias=True),
-            #nn.Softmax(dim=-3),
-            nn.Sigmoid()
+            nn.Conv2d(self.seg_feat_channels, self.cate_out_channels, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.Sigmoid(),
         )
 
         # Instance branch head
@@ -199,7 +199,7 @@ class SOLOHead(nn.Module):
 
         # Check flag
         if not evaluate:
-            assert cate_pred.shape[1:] == (self.num_classes, num_grid, num_grid)
+            assert cate_pred.shape[1:] == (3, num_grid, num_grid)
             assert ins_pred.shape[1:] == (num_grid ** 2, fpn_feat.shape[2] * 2, fpn_feat.shape[3] * 2)
         else:
             pass
@@ -383,7 +383,7 @@ class SOLOHead(nn.Module):
             for cate_gts_level in zip(*cate_gts_list)
         ], dim=0).to(torch.long)
         cate_preds = torch.cat([
-            cate_pred_level.permute(0, 2, 3, 1).reshape(-1, self.num_classes)
+            cate_pred_level.permute(0, 2, 3, 1).reshape(-1, self.cate_out_channels)
             for cate_pred_level in cate_pred_list
         ], dim=0)
 
@@ -412,19 +412,13 @@ class SOLOHead(nn.Module):
         """
         Compute the Focal Loss.
         """
-        # mask = F.one_hot(cate_gts, num_classes=self.num_classes).to(torch.bool)
-        # a = torch.where(mask, self.cate_loss_cfg["alpha"], 1 - self.cate_loss_cfg["alpha"])
-        # p = torch.where(mask, cate_preds, 1 - cate_preds).clamp(min=1e-9)
-        # return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
-        a = (1 / torch.tensor([
-        1 - self.cate_loss_cfg["alpha"],
-            self.cate_loss_cfg["alpha"],
-            self.cate_loss_cfg["alpha"],
-            self.cate_loss_cfg["alpha"]
-        ], device=cate_preds.device))[cate_gts]
-        p = cate_preds[torch.arange(len(cate_preds)), cate_gts].clamp(min=1e-9)
-        return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
+        indices = cate_gts > 0
+        cate_preds, cate_gts = cate_preds[indices], cate_gts[indices] - 1
 
+        mask = F.one_hot(cate_gts, num_classes=self.cate_out_channels).to(torch.bool)
+        a = torch.where(mask, self.cate_loss_cfg["alpha"], 1 - self.cate_loss_cfg["alpha"])
+        p = torch.where(mask, cate_preds, 1 - cate_preds).clamp(min=1e-9)
+        return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
 
     def PostProcess(
         self,

@@ -72,10 +72,7 @@ if __name__ == "__main__":
     #             ins_gts_list, ins_ind_gts_list, cate_gts_list = model.head.target(ins_pred_list, bbox_list, label_list, mask_list)
     #
     #             if not evaluate:
-    #                 print(model.training_step(data, iter))
-    #             # raise Exception()
-    #             # print([ins_pred.shape for ins_pred in ins_pred_list])
-    #             # print([cate_pred.shape for cate_pred in cate_pred_list])
+    #                 print(model.head.loss(cate_pred_list, ins_pred_list, ins_gts_list, ins_ind_gts_list, cate_gts_list))
     #             else:
     #                 cate_pred_list, ins_pred_list = model.forward(img, evaluate=evaluate)
     #                 print([t.shape for t in model.head.PostProcess(ins_pred_list, cate_pred_list, (800, 1088))])
