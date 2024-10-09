@@ -9,6 +9,8 @@ import torch
 import torchvision.transforms
 from torch.utils.data import Dataset, DataLoader
 
+from settings import DEVICE
+
 
 class BuildDataset(Dataset):
     def __init__(self, paths: Dict[str, str]):

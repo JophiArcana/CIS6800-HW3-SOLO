@@ -28,10 +28,10 @@ if __name__ == "__main__":
     # random split the dataset into training and testset
     # set seed
     torch.random.manual_seed(1)
-    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size], generator=torch.Generator(DEVICE))
+    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size]) #, generator=torch.Generator(DEVICE))
     # push the randomized training data into the dataloader
 
-    batch_size = 3
+    batch_size = 16
     train_loader = BuildDataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
     test_loader = BuildDataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
 

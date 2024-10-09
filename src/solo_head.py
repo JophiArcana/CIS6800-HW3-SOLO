@@ -10,6 +10,8 @@ from scipy.ndimage import center_of_mass
 from backbone import *
 from dataset import *
 
+from settings import DEVICE
+
 
 def conv_gn_relu(in_channels, out_channels, kernel_size=3, stride=1, padding=1, num_groups=32, bias=False):
     """Helper function to create a Conv2d -> GroupNorm -> ReLU layer."""
@@ -88,7 +90,8 @@ class SOLOHead(nn.Module):
 
         self.cate_out = nn.Sequential(
             nn.Conv2d(self.seg_feat_channels, self.num_classes, kernel_size=3, stride=1, padding=1, bias=True),
-            nn.Softmax(dim=-3),
+            #nn.Softmax(dim=-3),
+            nn.Sigmoid()
         )
 
         # Instance branch head
@@ -389,7 +392,7 @@ class SOLOHead(nn.Module):
             self.DiceLoss(ins_pred, ins_gt)
             for ins_pred, ins_gt in zip(ins_preds, ins_gts)
         ], dim=0).mean()
-        return lc * self.cate_loss_cfg["weight"] + lm * self.mask_loss_cfg["weight"]
+        return lc * self.cate_loss_cfg["weight"] + lm * self.mask_loss_cfg["weight"], lc, lm
 
     def DiceLoss(
         self,
@@ -409,10 +412,19 @@ class SOLOHead(nn.Module):
         """
         Compute the Focal Loss.
         """
-        mask = F.one_hot(cate_gts, num_classes=self.num_classes).to(torch.bool)
-        a = torch.where(mask, self.cate_loss_cfg["alpha"], 1 - self.cate_loss_cfg["alpha"])
-        p = torch.where(mask, cate_preds, 1 - cate_preds)
+        # mask = F.one_hot(cate_gts, num_classes=self.num_classes).to(torch.bool)
+        # a = torch.where(mask, self.cate_loss_cfg["alpha"], 1 - self.cate_loss_cfg["alpha"])
+        # p = torch.where(mask, cate_preds, 1 - cate_preds).clamp(min=1e-9)
+        # return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
+        a = (1 / torch.tensor([
+        1 - self.cate_loss_cfg["alpha"],
+            self.cate_loss_cfg["alpha"],
+            self.cate_loss_cfg["alpha"],
+            self.cate_loss_cfg["alpha"]
+        ], device=cate_preds.device))[cate_gts]
+        p = cate_preds[torch.arange(len(cate_preds)), cate_gts].clamp(min=1e-9)
         return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
+
 
     def PostProcess(
         self,
@@ -444,6 +456,9 @@ class SOLOHead(nn.Module):
         """
         Post-process predictions for a single image.
         """
+        indices = torch.argmax(cate_pred_img, dim=-1) > 0
+        ins_pred_img, cate_pred_img = ins_pred_img[indices], cate_pred_img[indices]
+
         scores, labels = torch.max(cate_pred_img, dim=-1)
 
         indices, = torch.where(scores > self.postprocess_cfg["cate_thresh"])
@@ -529,7 +544,7 @@ class SOLOHead(nn.Module):
         for img_idx in range(len(img)):
             _img = img[img_idx].permute(1, 2, 0)
             _img = ((_img - _img.min()) / (_img.max() - _img.min())).numpy(force=True)
-            plt.imshow(_img)
+            plt.imshow(_img) ; plt.show()
             plt.title("Inference")
 
 
