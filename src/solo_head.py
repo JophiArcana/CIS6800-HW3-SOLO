@@ -18,7 +18,7 @@ def conv_gn_relu(in_channels, out_channels, kernel_size=3, stride=1, padding=1, 
     return nn.Sequential(
         nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding, bias=bias),
         nn.GroupNorm(num_groups, out_channels),
-        nn.ReLU(inplace=True)
+        nn.ReLU(inplace=False)
     )
 
 
@@ -132,6 +132,9 @@ class SOLOHead(nn.Module):
         - ins_pred_list: List of instance predictions
         """
         new_fpn_list = self.NewFPN(fpn_feat_list)  # Adjust FPN features to desired strides
+        #print('New FPN feats')
+        #print(new_fpn_list)
+
         upsample_shape = [feat * 2 for feat in new_fpn_list[0].shape[-2:]]  # For evaluation
 
         cate_pred_list, ins_pred_list = self.MultiApply(
@@ -170,14 +173,27 @@ class SOLOHead(nn.Module):
         - cate_pred: Category prediction
         - ins_pred: Instance prediction
         """
+        #print('Forward Single Level', idx)
+        #print('FPN feat')
+        #print(fpn_feat)
+
         num_grid = self.seg_num_grids[idx]
         batch_size = fpn_feat.shape[0]
 
         # Category branch
-        cate_feat = F.interpolate(fpn_feat, size=(num_grid, num_grid), mode="bilinear", align_corners=False)
+        #cate_feat = F.interpolate(fpn_feat, size=(num_grid, num_grid), mode="bilinear", align_corners=False)
+        cate_feat = F.interpolate(fpn_feat, size=(num_grid, num_grid))#, mode="bilinear", align_corners=False)
+        #print('Cate', cate_feat.shape)
+        #print(cate_feat)
+
         for conv in self.cate_head:
             cate_feat = conv(cate_feat)
         cate_pred = self.cate_out(cate_feat)  # (batch_size, C, S, S)
+
+        
+        
+        #print(fpn_feat.shape)
+        #print(cate_pred.shape)
 
         # Instance branch
         # Generate coordinate feature
@@ -186,14 +202,20 @@ class SOLOHead(nn.Module):
         ins_feat = torch.cat([fpn_feat, coord_feat], dim=1)
         for conv in self.ins_head:
             ins_feat = conv(ins_feat)
+
         # Upsample the ins_feat by factor 2
-        ins_feat = F.interpolate(ins_feat, scale_factor=2, mode="bilinear", align_corners=False)
+        ins_feat = F.interpolate(ins_feat, scale_factor=2, mode="bilinear", align_corners=True)
+
+        #print('Ins pred')
+        #print(ins_feat)
+
         # Apply the output layer
         ins_pred = self.ins_out_list[idx](ins_feat)  # (batch_size, S^2, 2H_feat, 2W_feat)
 
         if evaluate:
             # Upsample ins_pred to upsample_shape
-            ins_pred = F.interpolate(ins_pred, size=upsample_shape, mode="bilinear", align_corners=False)
+            #ins_pred = F.interpolate(ins_pred, size=upsample_shape, mode="bilinear", align_corners=False)
+            ins_pred = F.interpolate(ins_pred, size=upsample_shape)
             # Apply points NMS to cate_pred
             cate_pred = self.points_nms(cate_pred).permute(0, 2, 3, 1)  # (batch_size, S, S, C)
 
@@ -260,7 +282,7 @@ class SOLOHead(nn.Module):
 
         return ins_gts_list, ins_ind_gts_list, cate_gts_list
 
-    def target_single_img(self, bounding_boxes, labels, masks, featmap_sizes=None):
+    def target_single_img(self, bounding_boxes, labels, masks, featmap_sizes):
         """
         Process single image to generate target labels for each feature pyramid level.
         Input:
@@ -271,91 +293,112 @@ class SOLOHead(nn.Module):
         Output:
         - tuple: Lists of instance labels, instance indices, and category labels
         """
-        h, w = masks.shape[2], masks.shape[3]
+        # Ensure tensors are on the same device
+        device = bounding_boxes.device
+        masks = masks.to(device)
+        labels = labels.to(device)
 
-        # Compute object areas and regions
-        area = torch.sqrt((bounding_boxes[:, 2] - bounding_boxes[:, 0]) * (bounding_boxes[:, 3] - bounding_boxes[:, 1]))
-        region = torch.zeros((masks.shape[0], 4), device=bounding_boxes.device)
+        # Extract image height and width from mask dimensions
+        img_h, img_w = masks.shape[2], masks.shape[3]
 
+        # Compute bounding box areas and regions (center of mass + normalized dimensions)
+        box_areas = torch.sqrt((bounding_boxes[:, 2] - bounding_boxes[:, 0]) * 
+                            (bounding_boxes[:, 3] - bounding_boxes[:, 1]))
+        regions = torch.zeros((masks.shape[0], 4), device=device)  # Make sure regions is on the same device
+
+        # Compute center of mass for each mask
         for i in range(masks.shape[0]):
-            center = center_of_mass(masks[i, :, :].cpu().numpy())
-            region[i, 0] = center[1] / w
-            region[i, 1] = center[0] / h
+            center_y, center_x = center_of_mass(masks[i, 0, :, :].detach().cpu().numpy())  # (y, x order from numpy)
+            regions[i, 0] = center_x  # center x
+            regions[i, 1] = center_y  # center y
 
-        region[:, 2] = (bounding_boxes[:, 2] - bounding_boxes[:, 0]) * 0.2 / w
-        region[:, 3] = (bounding_boxes[:, 3] - bounding_boxes[:, 1]) * 0.2 / h
+        # Normalize region dimensions
+        regions[:, 2] = (bounding_boxes[:, 2] - bounding_boxes[:, 0]) * 0.2 / img_w  # width
+        regions[:, 3] = (bounding_boxes[:, 3] - bounding_boxes[:, 1]) * 0.2 / img_h  # height
+        regions[:, 0] /= img_w  # Normalize center x by image width
+        regions[:, 1] /= img_h  # Normalize center y by image height
 
-        ins_label_list, ins_ind_label_list, cate_label_list = [], [], []
+        # Lists to store labels for each feature map level
+        instance_labels = []
+        instance_idx_labels = []
+        category_labels = []
 
-        for i, size in enumerate(featmap_sizes):
-            # Determine which objects belong to this feature level
+        # Process for each feature map size
+        for i, feat_size in enumerate(featmap_sizes):
+            # Determine scale-based index mask
             if i == 0:
-                idx = area < 96
+                idx = box_areas < 96
             elif i == 1:
-                idx = (96 > area) & (area > 48)
+                idx = torch.logical_and(box_areas < 192, box_areas > 48)
             elif i == 2:
-                idx = (384 > area) & (area > 96)
+                idx = torch.logical_and(box_areas < 384, box_areas > 96)
             elif i == 3:
-                idx = (768 > area) & (area > 192)
-            else:
-                idx = area >= 384
+                idx = torch.logical_and(box_areas < 768, box_areas > 192)
+            else:  # i == 4
+                idx = box_areas >= 384
 
-            grid = self.seg_num_grids[i]
+            # If no objects in this scale range, create empty label maps
+            if torch.sum(idx) == 0:
+                empty_cat_label = torch.zeros((self.seg_num_grids[i], self.seg_num_grids[i]), device=device)
+                empty_ins_label = torch.zeros((self.seg_num_grids[i]**2, feat_size[0], feat_size[1]), device=device)
+                empty_ins_idx_label = torch.zeros(self.seg_num_grids[i]**2, dtype=torch.bool, device=device)
 
-            if not idx.any():
-                # If no objects in this level, append empty tensors
-                cate_label_list.append(torch.zeros((grid, grid), device=bounding_boxes.device))
-                ins_label_list.append(torch.zeros((grid ** 2, size[0], size[1]), device=bounding_boxes.device))
-                ins_ind_label_list.append(torch.zeros(grid ** 2, dtype=torch.bool, device=bounding_boxes.device))
+                category_labels.append(empty_cat_label)
+                instance_labels.append(empty_ins_label)
+                instance_idx_labels.append(empty_ins_idx_label)
                 continue
 
-            # Compute grid indices for objects in this level
-            region_idx = region[idx, :]
-            left_ind, right_ind = ((region_idx[:, 0] - region_idx[:, 2] / 2) * grid).int(), (
-                (region_idx[:, 0] + region_idx[:, 2] / 2) * grid).int()
-            top_ind, bottom_ind = ((region_idx[:, 1] - region_idx[:, 3] / 2) * grid).int(), (
-                (region_idx[:, 1] + region_idx[:, 3] / 2) * grid).int()
+            # Extract relevant regions for selected objects
+            selected_regions = regions[idx, :]
 
-            left = torch.clamp(left_ind, 0, grid - 1)
-            right = torch.clamp(right_ind, 0, grid - 1)
-            top = torch.clamp(top_ind, 0, grid - 1)
-            bottom = torch.clamp(bottom_ind, 0, grid - 1)
+            # Compute grid indices for region boundaries
+            left_idx = ((selected_regions[:, 0] - selected_regions[:, 2] / 2) * self.seg_num_grids[i]).int()
+            right_idx = ((selected_regions[:, 0] + selected_regions[:, 2] / 2) * self.seg_num_grids[i]).int()
+            top_idx = ((selected_regions[:, 1] - selected_regions[:, 3] / 2) * self.seg_num_grids[i]).int()
+            bottom_idx = ((selected_regions[:, 1] + selected_regions[:, 3] / 2) * self.seg_num_grids[i]).int()
 
-            xA = torch.clamp((region_idx[:, 0] * grid).int() - 1, left, right)
-            xB = torch.clamp((region_idx[:, 0] * grid).int() + 1, left, right)
-            yA = torch.clamp((region_idx[:, 1] * grid).int() - 1, top, bottom)
-            yB = torch.clamp((region_idx[:, 1] * grid).int() + 1, top, bottom)
+            # Clip indices to grid boundaries
+            left = torch.clamp(left_idx, min=0)
+            right = torch.clamp(right_idx, max=self.seg_num_grids[i] - 1)
+            top = torch.clamp(top_idx, min=0)
+            bottom = torch.clamp(bottom_idx, max=self.seg_num_grids[i] - 1)
 
-            # Initialize tensors for this level
-            cat_label = torch.zeros((grid, grid), device=bounding_boxes.device)
-            ins_label = torch.zeros((grid ** 2, size[0], size[1]), device=bounding_boxes.device)
-            ins_index_label = torch.zeros(grid ** 2, dtype=torch.bool, device=bounding_boxes.device)
+            # Adjust region centers to grid space
+            center_x = (selected_regions[:, 0] * self.seg_num_grids[i]).int()
+            center_y = (selected_regions[:, 1] * self.seg_num_grids[i]).int()
 
-            # Interpolate masks to feature map size
-            mask_interpolate = F.interpolate(masks[idx, :, :, :], size=(size[0], size[1]), mode="bilinear")
-            mask_interpolate = (mask_interpolate > 0.5).float()
+            # Define label grids
+            cat_label_grid = torch.zeros((self.seg_num_grids[i], self.seg_num_grids[i]), device=device)
+            ins_label_grid = torch.zeros((self.seg_num_grids[i]**2, feat_size[0], feat_size[1]), device=device)
+            ins_idx_label = torch.zeros(self.seg_num_grids[i]**2, dtype=torch.bool, device=device)
 
-            # Assign labels and masks
-            for j in range(xA.size(0)):
-                cat_label[yA[j]:yB[j] + 1, xA[j]:xB[j] + 1] = labels[idx][j]
-                flag_matrix = torch.zeros_like(cat_label)
-                flag_matrix[yA[j]:yB[j] + 1, xA[j]:xB[j] + 1] = 1
-                positive_index = flag_matrix.flatten() > 0
-                ins_label[positive_index, :, :] = mask_interpolate[j, 0, :, :]
-                ins_index_label |= positive_index
+            # Interpolate masks to the current feature map size
+            mask_interpolated = torch.nn.functional.interpolate(masks[idx, :, :, :], size=(feat_size[0], feat_size[1]))
+            mask_interpolated = (mask_interpolated > 0.5).float()  # Binarize the masks
 
-            cate_label_list.append(cat_label)
-            ins_label_list.append(ins_label)
-            ins_ind_label_list.append(ins_index_label)
+            # Assign labels to grid cells
+            for j in range(center_x.size(0)):
+                # Assign category labels to the corresponding grid cells
+                cat_label_grid[top[j]:bottom[j] + 1, left[j]:right[j] + 1] = labels[idx][j]
 
-        # Check flag
-        assert ins_label_list[1].shape == (1296, 200, 272)
-        assert ins_ind_label_list[1].shape == (1296,)
-        assert cate_label_list[1].shape == (36, 36)
+                # Mark positive grid cells for mask assignment
+                mask_flag = torch.zeros_like(cat_label_grid)
+                mask_flag[top[j]:bottom[j] + 1, left[j]:right[j] + 1] = 1
 
-        return ins_label_list, ins_ind_label_list, cate_label_list
+                positive_idx = torch.flatten(mask_flag) > 0
+                ins_label_grid[positive_idx, :, :] = mask_interpolated[j, 0, :, :]
 
-    # The following methods are placeholders for loss computation and post-processing.
+                # Update instance index label for positive cells
+                ins_idx_label = torch.logical_or(ins_idx_label, positive_idx)
+
+            # Append to output lists
+            category_labels.append(cat_label_grid)
+            instance_labels.append(ins_label_grid)
+            instance_idx_labels.append(ins_idx_label)
+
+        return instance_labels, instance_idx_labels, category_labels
+
+
     def loss(self, cate_pred_list, ins_pred_list, ins_gts_list, ins_ind_gts_list, cate_gts_list):
         """
         Compute loss for a batch of images.
@@ -392,6 +435,7 @@ class SOLOHead(nn.Module):
             self.DiceLoss(ins_pred, ins_gt)
             for ins_pred, ins_gt in zip(ins_preds, ins_gts)
         ], dim=0).mean()
+
         return lc * self.cate_loss_cfg["weight"] + lm * self.mask_loss_cfg["weight"], lc, lm
 
     def DiceLoss(
@@ -450,8 +494,25 @@ class SOLOHead(nn.Module):
         """
         Post-process predictions for a single image.
         """
-        indices = torch.argmax(cate_pred_img, dim=-1) > 0
-        ins_pred_img, cate_pred_img = ins_pred_img[indices], cate_pred_img[indices]
+        # indices = torch.argmax(cate_pred_img, dim=-1) > 0
+        # ins_pred_img, cate_pred_img = ins_pred_img[indices], cate_pred_img[indices]
+
+        # scores, labels = torch.max(cate_pred_img, dim=-1)
+
+        # indices, = torch.where(scores > self.postprocess_cfg["cate_thresh"])
+        # scores, idx = torch.sort(scores[indices], descending=True)
+        # indices = indices[idx]
+
+        # ins_pred_img, labels = ins_pred_img[indices], labels[indices]
+        # ins_pred_img = torchvision.transforms.Resize(ori_size)(ins_pred_img)
+
+        # decayed_scores = self.MatrixNMS(ins_pred_img, scores)
+        # decayed_scores, idx = torch.topk(decayed_scores, self.postprocess_cfg["keep_instance"])
+
+        # ins_pred_img, scores, labels = ins_pred_img[idx], scores[idx], labels[idx]
+        # ins_pred_img = (ins_pred_img > self.postprocess_cfg["ins_thresh"]).to(torch.float)
+
+        # return scores, labels, ins_pred_img
 
         scores, labels = torch.max(cate_pred_img, dim=-1)
 
@@ -467,7 +528,9 @@ class SOLOHead(nn.Module):
 
         ins_pred_img, scores, labels = ins_pred_img[idx], scores[idx], labels[idx]
         ins_pred_img = (ins_pred_img > self.postprocess_cfg["ins_thresh"]).to(torch.float)
-        return scores, labels, ins_pred_img
+        return scores, labels + 1, ins_pred_img
+
+
 
     def MatrixNMS(self, sorted_masks, sorted_scores, method="gauss", gauss_sigma=0.5):
         """
@@ -518,7 +581,7 @@ class SOLOHead(nn.Module):
 
                 for idx, l in enumerate(label):
                     if l > 0:
-                        combined_mask[:, :, l - 1] += reshaped_mask[idx, 0, :, :].numpy(force=True)
+                        combined_mask[:, :, int(l.item()) - 1] += reshaped_mask[idx, 0, :, :].numpy(force=True)
 
                 origin_img = _img
                 index_to_mask = combined_mask > 0

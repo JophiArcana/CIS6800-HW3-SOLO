@@ -42,7 +42,7 @@ class BuildDataset(Dataset):
 
         with h5py.File(paths["mask"], "r") as f:
             mask_transform = torchvision.transforms.Compose([
-                torchvision.transforms.Resize(size=(800, 1066), antialias=False),
+                torchvision.transforms.Resize(size=(800, 1066), interpolation=torchvision.transforms.InterpolationMode.NEAREST),
                 torchvision.transforms.Pad(padding=(11, 0)),
             ])
             transformed_mask = mask_transform(torch.tensor(np.array(f["data"])).to(torch.float))
@@ -53,7 +53,7 @@ class BuildDataset(Dataset):
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # TODO: __getitem__
-        transformed_img = self.img_transform(self.img[index])
+        transformed_img = self.img_transform(self.img[index]/255)
         transformed_masks = self.transformed_mask[index]
         labels = self.labels[index]
         transformed_bboxes = self.transformed_bboxes[index]
@@ -102,7 +102,7 @@ if __name__ == "__main__":
     test_size = full_size - train_size
     # random split the dataset into training and testset
     # set seed
-    torch.random.manual_seed(1)
+    torch.random.manual_seed(42)
     train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
     # push the randomized training data into the dataloader
 

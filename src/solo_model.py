@@ -17,7 +17,12 @@ class SOLO(pl.LightningModule):
         self.head = SOLOHead(4)
 
     def forward(self, img: torch.tensor, evaluate: bool = False):
+        #print('Images')
+        #print(img[0, 0, 100:-100, 100:-100])
+
         fpn_feat_list = [v.detach() for v in self.backbone(img).values()]
+        #fpn_feat_list = list(self.backbone(img).values())
+
         return self.head(fpn_feat_list, evaluate=evaluate)
 
     def training_step(self, batch, batch_idx: int):
@@ -52,6 +57,7 @@ class SOLO(pl.LightningModule):
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         optimizer = torch.optim.SGD(self.head.parameters(), lr=1e-2, momentum=0.9, weight_decay=1e-4)
+        #optimizer = torch.optim.SGD(self.parameters(), lr=1e-2, momentum=0.9, weight_decay=1e-4)
         scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[27, 33], gamma=0.1)
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
 
