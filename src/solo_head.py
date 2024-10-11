@@ -41,7 +41,7 @@ class SOLOHead(nn.Module):
             "cate_thresh": 0.2,
             "ins_thresh": 0.5,
             "pre_NMS_num": 50,          # ??????
-            "keep_instance": 5,
+            "keep_instance": 2,
             "IoU_thresh": 0.5           # ??????
         })
     ):
@@ -462,6 +462,8 @@ class SOLOHead(nn.Module):
         mask = F.one_hot(cate_gts, num_classes=self.cate_out_channels).to(torch.bool)
         a = torch.where(mask, self.cate_loss_cfg["alpha"], 1 - self.cate_loss_cfg["alpha"])
         p = torch.where(mask, cate_preds, 1 - cate_preds).clamp(min=1e-9)
+        #a = torch.where(mask, 1 - self.cate_loss_cfg["alpha"], self.cate_loss_cfg["alpha"])
+        #p = torch.where(mask, 1 - cate_preds, cate_preds).clamp(min=1e-9)
         return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
 
     def PostProcess(

@@ -45,7 +45,7 @@ class SOLO(pl.LightningModule):
     def validation_step(self, batch, batch_idx: int):
         img, label_list, mask_list, bbox_list = batch
 
-        cate_pred_list, ins_pred_list = self.forward(img, evaluate=True)
+        cate_pred_list, ins_pred_list = self.forward(img, evaluate=False)
         ins_gts_list, ins_ind_gts_list, cate_gts_list = self.head.target(ins_pred_list, bbox_list, label_list,mask_list)
 
         loss, focal_loss, dice_loss = self.head.loss(cate_pred_list, ins_pred_list, ins_gts_list, ins_ind_gts_list, cate_gts_list)
