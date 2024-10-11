@@ -1,3 +1,7 @@
 src/.idea
 src/data
 src/testfig
+src/checkpoints
+src/checkpoints_backup
+src/tensorboard
+src/tensorboard_backup

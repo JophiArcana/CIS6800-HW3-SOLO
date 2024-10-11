@@ -435,7 +435,6 @@ class SOLOHead(nn.Module):
             self.DiceLoss(ins_pred, ins_gt)
             for ins_pred, ins_gt in zip(ins_preds, ins_gts)
         ], dim=0).mean()
-
         return lc * self.cate_loss_cfg["weight"] + lm * self.mask_loss_cfg["weight"], lc, lm
 
     def DiceLoss(
@@ -457,13 +456,11 @@ class SOLOHead(nn.Module):
         Compute the Focal Loss.
         """
         indices = cate_gts > 0
-        cate_preds, cate_gts = cate_preds[indices], cate_gts[indices] - 1
-
-        mask = F.one_hot(cate_gts, num_classes=self.cate_out_channels).to(torch.bool)
+        mask = torch.full_like(cate_preds, False, dtype=bool)
+        mask[indices] = F.one_hot(cate_gts[indices] - 1, num_classes=self.cate_out_channels).to(torch.bool)
+        
         a = torch.where(mask, self.cate_loss_cfg["alpha"], 1 - self.cate_loss_cfg["alpha"])
         p = torch.where(mask, cate_preds, 1 - cate_preds).clamp(min=1e-9)
-        #a = torch.where(mask, 1 - self.cate_loss_cfg["alpha"], self.cate_loss_cfg["alpha"])
-        #p = torch.where(mask, 1 - cate_preds, cate_preds).clamp(min=1e-9)
         return -torch.mean(a * torch.log(p) * (1 - p) ** self.cate_loss_cfg["gamma"])
 
     def PostProcess(
@@ -532,8 +529,6 @@ class SOLOHead(nn.Module):
         ins_pred_img = (ins_pred_img > self.postprocess_cfg["ins_thresh"]).to(torch.float)
         return scores, labels + 1, ins_pred_img
 
-
-
     def MatrixNMS(self, sorted_masks, sorted_scores, method="gauss", gauss_sigma=0.5):
         """
         Perform Matrix NMS.
@@ -541,11 +536,11 @@ class SOLOHead(nn.Module):
         n = len(sorted_scores)
         sorted_masks = sorted_masks.reshape(n, -1)
         intersection = torch.mm(sorted_masks, sorted_masks.T)
-        areas = sorted_masks.sum(dim=1).expand(n, n)
+        areas = torch.sum(sorted_masks, dim=1, keepdim=True)
         union = areas + areas.T - intersection
         ious = (intersection / union).triu(diagonal=1)
 
-        ious_cmax = ious.max(0)[0].expand(n, n).T
+        ious_cmax = ious.max(dim=0)[0].expand(n, n).T
         if method == "gauss":
             decay = torch.exp(-(ious ** 2 - ious_cmax ** 2) / gauss_sigma)
         else:
@@ -599,7 +594,7 @@ class SOLOHead(nn.Module):
         """
         Plot inference segmentation results on the image.
         """
-        score_threshold = 0.5
+        score_threshold = 0.3
         for img_idx in range(len(img)):
             _img = img[img_idx].permute(1, 2, 0)
             _img = ((_img - _img.min()) / (_img.max() - _img.min())).numpy(force=True)
